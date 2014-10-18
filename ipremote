@@ -1,3 +1,5 @@
+#!/usr/bin/env lsc
+
 require! {
   \async
   \node-netcat
@@ -44,7 +46,8 @@ class Device
 
 devices = 
   avr:
-    ip-address: \10.0.0.132 # 
+    ip-address: null #\10.0.0.132
+    mac-address: \00:05:CD:35:04:CF
     port      : 23 
     timeout   : 1500
     buttons:
@@ -54,7 +57,8 @@ devices =
       cable   : { command: "SISAT/CBL\x0D", sleep: 3000 }
       game    : { command: "SIGAME\x0D", sleep: 3000 }
   tv:
-    ip-address: \10.0.0.140 # MAC: 9C:C7:D1:81:B0:A1
+    ip-address: null #\10.0.0.140
+    mac-address: \9C:C7:D1:81:B0:A1
     port      : 10002 
     timeout   : 1500
     buttons:
