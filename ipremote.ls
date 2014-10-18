@@ -1,0 +1,341 @@
+require! {
+  \async
+  \node-netcat
+  \express
+}
+
+debug = true
+
+class Device
+  (@name, @device) ~>
+    send-command = (item, cb) ~> 
+      @send-command item.button, cb
+    @command-queue = async.queue send-command, 1
+  click: (button-name) ~>
+    if @device.buttons[button-name]
+      @command-queue.push button: @device.buttons[button-name], ->
+        if debug is true
+          console.log "#{button-name} finished!"
+    else
+      if debug is true
+        console.log 'someone asked us for a command we don\'t know about', button-name
+  send-command: (button, cb) ~>
+    command = button.command
+    nc = new node-netcat.client @device.port, @device.ip-address, @device.timeout
+      ..on \open ->
+        nc.send command, true, ->
+          if debug is true
+            console.log "'#{@name}' sent command: ", command
+      ..on \close ->
+          if debug is true
+            console.log "'#{@name}' finished command: ", command
+          if cb 
+            if button.sleep > 0
+              set-timeout cb, button.sleep
+            else
+              cb!
+      ..on \error (err) ->
+          if debug is true
+            console.log "'#{@name}' command error: ", command, err
+      ..on \data (data) ->
+        if debug is true
+          console.log "'#{@name}' command returned: ", command, data.to-string \ascii
+      ..start!
+
+devices = 
+  avr:
+    ip-address: \10.0.0.132 # 
+    port      : 23 
+    timeout   : 1500
+    buttons:
+      off     : { command: "PWSTANDBY\x0D", sleep: 2000 }
+      on      : { command: "PWON\x0D",      sleep: 13000 }
+      xbmc    : { command: "SIMPLAY\x0D",   sleep: 3000 }
+      cable   : { command: "SISAT/CBL\x0D", sleep: 3000 }
+      game    : { command: "SIGAME\x0D", sleep: 3000 }
+  tv:
+    ip-address: \10.0.0.140 # MAC: 9C:C7:D1:81:B0:A1
+    port      : 10002 
+    timeout   : 1500
+    buttons:
+      off     : { command: "POWR0   \x0D", sleep: 2000 }
+      on      : { command: "POWR1   \x0D", sleep: 13000 }
+      mute    : { command: "RCKY31  \x0D", sleep: 1000 }
+      voldown : { command: "RCKY32  \x0D", sleep: 250 }
+      volup   : { command: "RCKY33  \x0D", sleep: 250 }
+      menu    : { command: "RCKY38  \x0D", sleep: 0 }
+      enter   : { command: "RCKY40  \x0D", sleep: 0 }
+      exit    : { command: "RCKY46  \x0D", sleep: 0 }
+      up      : { command: "RCKY41  \x0D", sleep: 0 }
+      down    : { command: "RCKY42  \x0D", sleep: 0 }
+      left    : { command: "RCKY43  \x0D", sleep: 0 }
+      right   : { command: "RCKY44  \x0D", sleep: 0 }
+      play    : { command: "RCKY16  \x0D", sleep: 0 }
+      pause   : { command: "RCKY18  \x0D", sleep: 0 }
+      stop    : { command: "RCKY21  \x0D", sleep: 0 }
+
+tv  = new Device \tv,  devices.tv
+avr = new Device \avr, devices.avr
+
+# so we can put it at the bottom
+# no __PERLISAWESOME__ available in livescript
+var main
+
+express!
+  ..use express.urlencoded!
+  ..use express.json!
+  ..get '/', (req, res) ->
+    res.send main
+    if debug is true
+      console.log 'main interface sent'
+  ..post '/', (req, res) ->
+    button      = req.body
+    if typeof! button is \Object and button.name
+      device      = button.name.split \- .0
+      button-name = button.name.split \- .1
+      switch device 
+        case \tv 
+          tv.click button-name
+        case \avr
+          avr.click button-name
+    res.send \OK
+  ..listen 9000
+
+main = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>IPRemote</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="http://netdna.bootstrapcdn.com/twitter-bootstrap/2.3.2/css/bootstrap-combined.min.css" rel="stylesheet">
+    <link href="http://netdna.bootstrapcdn.com/font-awesome/4.0.3/css/font-awesome.css" rel="stylesheet">
+    <script src="http://code.jquery.com/jquery-2.1.0.min.js"></script>
+    <script src="http://netdna.bootstrapcdn.com/twitter-bootstrap/2.3.2/js/bootstrap.min.js"></script>
+    <style type="text/css">
+    </style>
+</head>
+<body style="background:black">
+
+<div id="remote" class="container" style="width:200px">
+  <div class="btn-toolbar text-center">
+    <div class="btn-group">
+      <a href="#" class="btn btn-large btn-danger" name="tv-off"><i class="fa fa-power-off"></i></a>
+      <a href="#" class="btn btn-large btn-success" name="tv-on"><i class="fa fa-power-off"></i></a>
+    </div>
+  </div>
+  <div class="btn-toolbar text-center">
+    <div class="btn-group">
+      <a href="#" class="btn btn-large btn-inverse" name="avr-cable"><span class="fa fa-desktop"></span></a>
+      <a href="#" class="btn btn-large btn-inverse" name="avr-game"><span class="fa fa-windows"></span></a>
+      <a href="#" class="btn btn-large btn-inverse" name="avr-xbmc"><span class="fa fa-film"></span></a>
+    </div>
+  </div>	
+  <div class="btn-toolbar text-center">
+    <div class="btn-group">
+      <a href="#" class="btn btn-large btn-warning" name="tv-menu"><i class="fa fa-bars"></i></a>
+      <a href="#" class="btn btn-large btn-inverse" name="tv-exit"><i class="fa fa-mail-reply-all"></i></a>
+    </div>
+  </div>
+  <div class="btn-toolbar text-center">
+    <div class="btn-group">
+      <a href="#" class="btn btn-large btn-inverse" name="tv-stop"><span class="fa fa-stop"></span></a>
+      <a href="#" class="btn btn-large btn-inverse" name="tv-pause"><span class="fa fa-pause"></span></a>
+      <a href="#" class="btn btn-large btn-inverse" name="tv-play"><span style="color:#51A351" class="fa fa-play"></span></a>
+    </div>
+  </div>
+  <div class="btn-toolbar text-center">
+    <div class="btn-group">
+      <a href="#" class="btn btn-large btn-inverse" name="tv-up"><span class="fa fa-chevron-up"></span></a>
+    </div>
+  </div>	
+  <div class="btn-toolbar text-center">
+    <div class="btn-group">
+      <a href="#" class="btn btn-large btn-inverse" name="tv-left"><span class="fa fa-chevron-left"></span></a>
+      <a href="#" class="btn btn-large btn-primary" name="tv-enter"><span class="fa fa-square-o"></span></a>
+      <a href="#" class="btn btn-large btn-inverse" name="tv-right"><span class="fa fa-chevron-right"></span></a>
+    </div>
+  </div>	
+  <div class="btn-toolbar text-center">
+    <div class="btn-group">
+      <a href="#" class="btn btn-large btn-inverse" name="tv-down"><span class="fa fa-chevron-down"></span></a>
+    </div>
+  </div>	
+  <div class="btn-toolbar text-center">
+    <div class="btn-group">
+      <a href="#" class="btn btn-large btn-inverse" name="tv-mute"><span style="color:#BD362F" class="fa fa-volume-off"></span></a>
+      <a href="#" class="btn btn-large btn-inverse" name="tv-voldown"><span class="fa fa-volume-down"></span></a>
+      <a href="#" class="btn btn-large btn-inverse" name="tv-volup"><span class="fa fa-volume-up"></span></a>
+    </div>
+  </div>	
+</div>
+
+<script type="text/javascript">
+/*
+ * jQuery Hotkeys Plugin
+ * Copyright 2010, John Resig
+ * Dual licensed under the MIT or GPL Version 2 licenses.
+ *
+ * Based upon the plugin by Tzury Bar Yochay:
+ * http://github.com/tzuryby/hotkeys
+ *
+ * Original idea by:
+ * Binny V A, http://www.openjs.com/scripts/events/keyboard_shortcuts/
+*/
+
+/*
+ * One small change is: now keys are passed by object { keys: '...' }
+ * Might be useful, when you want to pass some other data to your handler
+ */
+
+(function(jQuery){
+	
+	jQuery.hotkeys = {
+		version: "0.8",
+
+		specialKeys: {
+			8: "backspace", 9: "tab", 10: "return", 13: "return", 16: "shift", 17: "ctrl", 18: "alt", 19: "pause",
+			20: "capslock", 27: "esc", 32: "space", 33: "pageup", 34: "pagedown", 35: "end", 36: "home",
+			37: "left", 38: "up", 39: "right", 40: "down", 45: "insert", 46: "del", 
+			96: "0", 97: "1", 98: "2", 99: "3", 100: "4", 101: "5", 102: "6", 103: "7",
+			104: "8", 105: "9", 106: "*", 107: "+", 109: "-", 110: ".", 111 : "/", 
+			112: "f1", 113: "f2", 114: "f3", 115: "f4", 116: "f5", 117: "f6", 118: "f7", 119: "f8", 
+			120: "f9", 121: "f10", 122: "f11", 123: "f12", 144: "numlock", 145: "scroll", 186: ";", 191: "/",
+			/*220: "\\",*/ 222: "'", 224: "meta"
+		},
+	
+		shiftNums: {
+			"`": "~", "1": "!", "2": "@", "3": "#", "4": "$", "5": "%", "6": "^", "7": "&", 
+			"8": "*", "9": "(", "0": ")", "-": "_", "=": "+", ";": ": ", /*"'": "\"",*/ ",": "<", 
+			".": ">",  "/": "?",  /*"\\": "|"*/
+		}
+	};
+
+	function keyHandler( handleObj ) {
+		if ( typeof handleObj.data === "string" ) {
+			handleObj.data = { keys: handleObj.data };
+		}
+
+		// Only care when a possible input has been specified
+		if ( !handleObj.data || !handleObj.data.keys || typeof handleObj.data.keys !== "string" ) {
+			return;
+		}
+
+		var origHandler = handleObj.handler,
+			keys = handleObj.data.keys.toLowerCase().split(" "),
+			textAcceptingInputTypes = ["text", "password", "number", "email", "url", "range", "date", "month", "week", "time", "datetime", "datetime-local", "search", "color", "tel"];
+	
+		handleObj.handler = function( event ) {
+			// Don't fire in text-accepting inputs that we didn't directly bind to
+			if ( this !== event.target && (/textarea|select/i.test( event.target.nodeName ) ||
+				jQuery.inArray(event.target.type, textAcceptingInputTypes) > -1 ) ) {
+				return;
+			}
+
+			var special = jQuery.hotkeys.specialKeys[ event.keyCode ],
+				character = String.fromCharCode( event.which ).toLowerCase(),
+				modif = "", possible = {};
+
+			// check combinations (alt|ctrl|shift+anything)
+			if ( event.altKey && special !== "alt" ) {
+				modif += "alt+";
+			}
+
+			if ( event.ctrlKey && special !== "ctrl" ) {
+				modif += "ctrl+";
+			}
+			
+			// TODO: Need to make sure this works consistently across platforms
+			if ( event.metaKey && !event.ctrlKey && special !== "meta" ) {
+				modif += "meta+";
+			}
+
+			if ( event.shiftKey && special !== "shift" ) {
+				modif += "shift+";
+			}
+
+			if ( special ) {
+				possible[ modif + special ] = true;
+			}
+
+			if ( character ) {
+				possible[ modif + character ] = true;
+				possible[ modif + jQuery.hotkeys.shiftNums[ character ] ] = true;
+
+				// "$" can be triggered as "Shift+4" or "Shift+$" or just "$"
+				if ( modif === "shift+" ) {
+					possible[ jQuery.hotkeys.shiftNums[ character ] ] = true;
+				}
+			}
+
+			for ( var i = 0, l = keys.length; i < l; i++ ) {
+				if ( possible[ keys[i] ] ) {
+					return origHandler.apply( this, arguments );
+				}
+			}
+		};
+	}
+
+	jQuery.each([ "keydown", "keyup", "keypress" ], function() {
+		jQuery.event.special[ this ] = { add: keyHandler };
+	});
+
+})( this.jQuery );
+
+var eventName = (navigator.userAgent.match(/(iPad|iPhone)/i)) ? "touchstart" : "click";
+
+(function () {
+  jQuery(document).bind('keypress', 'esc', function (e) {
+    $('#remote a[name=tv-exit]')[eventName]() ;
+    return false;
+  }) ;
+  jQuery(document).bind('keypress', 'left', function (e) {
+    $('#remote a[name=tv-left]')[eventName]() ;
+    return false;
+  }) ;
+  jQuery(document).bind('keypress', 'right', function (e) {
+    $('#remote a[name=tv-right]')[eventName]() ;
+    return false;
+  }) ;
+  jQuery(document).bind('keypress', 'up', function (e) {
+    $('#remote a[name=tv-up]')[eventName]() ;
+    return false;
+  }) ;
+  jQuery(document).bind('keypress', 'down', function (e) {
+    $('#remote a[name=tv-down]')[eventName]() ;
+    return false;
+  }) ;
+  jQuery(document).bind('keypress', 'return', function (e) {
+    $('#remote a[name=tv-enter]')[eventName]() ;
+    return false;
+  }) ;
+  jQuery(document).bind('keypress', 'p', function (e) {
+    $('#remote a[name=tv-play]')[eventName]() ;
+    return false;
+  }) ;
+  jQuery(document).bind('keypress', 'x', function (e) {
+    $('#remote a[name=avr-xbmc]')[eventName]() ;
+    return false;
+  }) ;
+  jQuery(document).bind('keypress', 'g', function (e) {
+    $('#remote a[name=avr-game]')[eventName]() ;
+    return false;
+  }) ;
+})() ;
+
+$('#remote a').css({cursor:'pointer'}) ;
+$('#remote a').bind(eventName, function (e) {
+  var el = $(this) ;
+  el.blur() ;
+  var name = el.attr('name') ;
+  $.ajax({
+    url: '/',
+    type: 'POST',
+    data: { name: name }
+  }).done(function () {console.log(eventName + ' ' + name)}) ;
+}) ;
+</script>
+</body>
+</html>
+'''
+
