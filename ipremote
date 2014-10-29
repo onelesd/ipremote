@@ -4,48 +4,16 @@ require! {
   \async
   \node-netcat
   \express
+  \util
+  cp: \child_process
 }
 
 debug = true
+server-port = 9000
 
-class Device
-  (@name, @device) ~>
-    send-command = (item, cb) ~> 
-      @send-command item.button, cb
-    @command-queue = async.queue send-command, 1
-  click: (button-name) ~>
-    if @device.buttons[button-name]
-      @command-queue.push button: @device.buttons[button-name], ->
-        if debug is true
-          console.log "#{button-name} finished!"
-    else
-      if debug is true
-        console.log 'someone asked us for a command we don\'t know about', button-name
-  send-command: (button, cb) ~>
-    command = button.command
-    nc = new node-netcat.client @device.port, @device.ip-address, @device.timeout
-      ..on \open ->
-        nc.send command, true, ->
-          if debug is true
-            console.log "'#{@name}' sent command: ", command
-      ..on \close ->
-          if debug is true
-            console.log "'#{@name}' finished command: ", command
-          if cb 
-            if button.sleep > 0
-              set-timeout cb, button.sleep
-            else
-              cb!
-      ..on \error (err) ->
-          if debug is true
-            console.log "'#{@name}' command error: ", command, err
-      ..on \data (data) ->
-        if debug is true
-          console.log "'#{@name}' command returned: ", command, data.to-string \ascii
-      ..start!
-
+# define devices and commands (aka "buttons")
 devices = 
-  avr:
+  avr: # Denon AVR-4520CI
     ip-address: null #\10.0.0.132
     mac-address: \00:05:CD:35:04:CF
     port      : 23 
@@ -55,8 +23,8 @@ devices =
       on      : { command: "PWON\x0D",      sleep: 13000 }
       xbmc    : { command: "SIMPLAY\x0D",   sleep: 3000 }
       cable   : { command: "SISAT/CBL\x0D", sleep: 3000 }
-      game    : { command: "SIGAME\x0D", sleep: 3000 }
-  tv:
+      game    : { command: "SIGAME\x0D",    sleep: 3000 }
+  tv: # Sharp LC-80LE632U (take advantage of HDMI-CEC to pass volume commands through to AVR)
     ip-address: null #\10.0.0.140
     mac-address: \9C:C7:D1:81:B0:A1
     port      : 10002 
@@ -78,32 +46,121 @@ devices =
       pause   : { command: "RCKY18  \x0D", sleep: 0 }
       stop    : { command: "RCKY21  \x0D", sleep: 0 }
 
-tv  = new Device \tv,  devices.tv
-avr = new Device \avr, devices.avr
+class Device
+  (@name, @device) ~>
+    send-command = (item, cb) ~> 
+      @send-command item.button, cb
+    @command-queue = async.queue send-command, 1
+  click: (button-name) ~>
+    if @device.buttons[button-name]
+      @command-queue.push button: @device.buttons[button-name], ->
+        console.log "#{button-name} finished!" if debug is true
+    else
+      if debug is true
+        console.log 'someone asked us for a command we don\'t know about', button-name
+  send-command: (button, cb) ~>
+    command = button.command
+    nc = new node-netcat.client @device.port, @device.ip-address, @device.timeout
+      ..on \open ->
+        nc.send command, true, ->
+          console.log "'#{@name}' sent command: ", command if debug is true
+      ..on \close ->
+          console.log "'#{@name}' finished command: ", command if debug is true
+          if cb 
+            if button.sleep > 0
+              set-timeout cb, button.sleep
+            else
+              cb!
+      ..on \error (err) ->
+          console.log "'#{@name}' command error: ", command, err if debug is true
+      ..on \data (data) ->
+        console.log "'#{@name}' command returned: ", command, data.to-string \ascii if debug is true
+      ..start!
 
-# so we can put it at the bottom
-# no __PERLISAWESOME__ available in livescript
-var main
+# TODO: check for darwin
+# process.platform.indexOf('darwin') == 0
+# inspiration for this function from https://github.com/teknopaul/arp
+ip-from-mac = (mac-address, cb) ->
+  # get our ip
+  ifconfig = cp.exec '/sbin/ifconfig | /usr/bin/grep "inet " | /usr/bin/tail -n1', (error, stdout, stderr) ->
+    local-ip = stdout.split ' ' .1
 
-express!
-  ..use express.urlencoded!
-  ..use express.json!
-  ..get '/', (req, res) ->
-    res.send main
-    if debug is true
-      console.log 'main interface sent'
-  ..post '/', (req, res) ->
-    button      = req.body
-    if typeof! button is \Object and button.name
-      device      = button.name.split \- .0
-      button-name = button.name.split \- .1
-      switch device 
-        case \tv 
-          tv.click button-name
-        case \avr
-          avr.click button-name
-    res.send \OK
-  ..listen 9000
+    # populate the arp cache for our subnet
+    pings = []
+    for let octet from 0 til 255
+      pings.push (cb) ->
+        ip = local-ip.replace(/\.\d+$/, ".#octet")
+        ping = cp.spawn \/sbin/ping, [\-c, 1, ip]
+        ping.on \close, (code) -> cb null, code
+
+    async.parallel pings, ->
+      arp = cp.spawn \/usr/sbin/arp, [\-an]
+      buffer = ''
+      errstream = ''
+      arp.stdout.on \data, (data) ->
+        buffer += data
+      arp.stderr.on \data, (data) ->
+        errstream += data
+      arp.on \close, (code) ->
+        if code is not 0
+          cb "Error running arp #code #errstream"
+          return
+        table = buffer.split /[\r\n]/
+        for idx from 0 til table.length
+          # ahost (216.86.77.194) at 00:e0:18:d3:6f:3f on ...
+          if table[idx].index-of(mac-address.replace(/0([0-9a-f])/g, '$1').to-lower-case!) is not -1
+            ip-address = table[idx].split ' ' .1.replace /[)(]/g, ''
+            console.log "#mac-address -> #ip-address" if debug is true
+            cb null, ip-address
+            return
+        cb "Count not find MAC in arp table: #mac-address"
+
+var tv, avr, main
+devices-ready = (error, result) ->
+  unless error
+    tv  = new Device \tv,  devices.tv
+    avr = new Device \avr, devices.avr
+    express!
+      ..use express.urlencoded!
+      ..use express.json!
+      ..get '/', (req, res) ->
+        res.send main
+        console.log 'main interface sent' if debug is true
+      ..post '/', (req, res) ->
+        button      = req.body
+        if typeof! button is \Object and button.name
+          device      = button.name.split \- .0
+          button-name = button.name.split \- .1
+          switch device 
+            case \tv 
+              tv.click button-name
+            case \avr
+              avr.click button-name
+        res.send \OK
+      ..listen server-port
+    console.log "Listening on port #server-port"
+  else
+    console.log "error: #error"
+
+async.parallel [
+  (cb) ->
+    tv = devices.tv
+    if tv.ip-address is null and tv.mac-address
+      ip-from-mac tv.mac-address, cb
+    else if tv.ip-address is null
+      cb 'ip-address and mac-address are both null. specify one or the other.'
+    else
+      cb null
+  , (cb) ->
+    avr = devices.avr
+    if avr.ip-address is null and avr.mac-address
+      ip-from-mac avr.mac-address, cb
+    else if avr.ip-address is null
+      cb 'ip-address and mac-address are both null. specify one or the other.'
+    else
+      cb null
+], devices-ready
+
 
 main = '''
 <!DOCTYPE html>
